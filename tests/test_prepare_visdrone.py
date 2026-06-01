@@ -3,7 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from prepare_visdrone import convert_visdrone_split, write_dataset_yaml
+from prepare_visdrone import convert_visdrone_split, resolve_split_dirs, write_dataset_yaml
 
 
 def test_convert_visdrone_split_writes_yolo_labels_and_skips_ignored(tmp_path: Path):
@@ -41,3 +41,27 @@ def test_write_dataset_yaml_points_to_prepared_output(tmp_path: Path):
     assert "train: images/train" in text
     assert "val: images/val" in text
     assert "0: pedestrian" in text
+
+
+def test_resolve_split_dirs_handles_nested_kaggle_layout(tmp_path: Path):
+    split = tmp_path / "VisDrone2019-DET-train"
+    nested = split / "VisDrone2019-DET-train"
+    (nested / "images").mkdir(parents=True)
+    (nested / "annotations").mkdir()
+
+    image_dir, annotation_dir = resolve_split_dirs(split)
+
+    assert image_dir == nested / "images"
+    assert annotation_dir == nested / "annotations"
+
+
+def test_resolve_split_dirs_handles_images_directly_in_split(tmp_path: Path):
+    split = tmp_path / "VisDrone2019-DET-val"
+    split.mkdir()
+    cv2.imwrite(str(split / "000001.jpg"), np.zeros((10, 10, 3), dtype=np.uint8))
+    (split / "annotations").mkdir()
+
+    image_dir, annotation_dir = resolve_split_dirs(split)
+
+    assert image_dir == split
+    assert annotation_dir == split / "annotations"

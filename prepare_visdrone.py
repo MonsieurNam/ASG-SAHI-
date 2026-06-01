@@ -102,8 +102,7 @@ def convert_visdrone_split(
 
     source = Path(source_split)
     output = Path(output_root)
-    image_src = source / "images"
-    ann_src = source / "annotations"
+    image_src, ann_src = resolve_split_dirs(source)
     image_dst = output / "images" / split_name
     label_dst = output / "labels" / split_name
     image_dst.mkdir(parents=True, exist_ok=True)
@@ -141,6 +140,48 @@ def convert_visdrone_split(
             summary["empty_labels"] += 1
 
     return summary
+
+
+def resolve_split_dirs(source_split: Path | str) -> tuple[Path, Path]:
+    """Resolve VisDrone image/annotation dirs across common Kaggle layouts."""
+
+    source = Path(source_split)
+    candidates = [
+        source,
+        source / source.name,
+    ]
+    candidates.extend(path for path in source.iterdir() if path.is_dir()) if source.exists() else None
+
+    for base in candidates:
+        image_dir = _first_existing_dir(base, ["images", "Images", "JPEGImages"])
+        if image_dir is not None:
+            annotation_dir = _first_existing_dir(base, ["annotations", "Annotations", "labels"])
+            return image_dir, annotation_dir or (base / "annotations")
+
+        direct_images = _has_images(base)
+        if direct_images:
+            annotation_dir = _first_existing_dir(base, ["annotations", "Annotations", "labels"])
+            return base, annotation_dir or (base / "annotations")
+
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(
+        "Could not find VisDrone images directory. Checked direct, nested, and child folders under: "
+        f"{checked}"
+    )
+
+
+def _first_existing_dir(base: Path, names: list[str]) -> Path | None:
+    for name in names:
+        candidate = base / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _has_images(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    return any(child.suffix.lower() in {".jpg", ".jpeg", ".png"} for child in path.iterdir())
 
 
 def write_dataset_yaml(output_root: Path | str, yaml_path: Path | str) -> Path:
