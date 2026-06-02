@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -46,7 +48,18 @@ def parse_args() -> argparse.Namespace:
         help="Folder containing VisDrone2019-DET-* directories.",
     )
     parser.add_argument("--output-root", default="/kaggle/working/VisDronePrepared")
-    parser.add_argument("--no-copy-images", action="store_true", help="Write labels/YAML only; do not copy images.")
+    parser.add_argument(
+        "--image-mode",
+        choices=["symlink", "copy", "none"],
+        default="symlink",
+        help="How to expose images in output. symlink is fastest on Kaggle; copy is safest; none writes labels/YAML only.",
+    )
+    parser.add_argument(
+        "--no-copy-images",
+        action="store_true",
+        help="Deprecated alias for --image-mode none.",
+    )
+    parser.add_argument("--progress-every", type=int, default=500, help="Print progress every N images.")
     parser.add_argument("--include-test-dev", action="store_true", help="Convert test-dev images/labels if annotations exist.")
     return parser.parse_args()
 
@@ -61,6 +74,7 @@ def main() -> None:
     requested_splits = ["train", "val"]
     if args.include_test_dev:
         requested_splits.append("test-dev")
+    image_mode = "none" if args.no_copy_images else args.image_mode
 
     for split in requested_splits:
         source_split = source_root / SPLIT_DIRS[split]
@@ -70,7 +84,8 @@ def main() -> None:
             source_split=source_split,
             output_root=output_root,
             split_name=split,
-            copy_images=not args.no_copy_images,
+            image_mode=image_mode,
+            progress_every=args.progress_every,
         )
 
     yaml_path = write_dataset_yaml(output_root, output_root / "VisDrone-prepared.yaml")
@@ -91,6 +106,8 @@ def convert_visdrone_split(
     output_root: Path | str,
     split_name: str,
     copy_images: bool = True,
+    image_mode: str | None = None,
+    progress_every: int = 500,
 ) -> dict[str, int]:
     """Convert one VisDrone DET split to YOLO label files.
 
@@ -112,8 +129,18 @@ def convert_visdrone_split(
     if not image_paths:
         raise FileNotFoundError(f"No images found in {image_src}")
 
-    summary = {"images": 0, "boxes": 0, "ignored": 0, "empty_labels": 0}
-    for image_path in image_paths:
+    if image_mode is None:
+        image_mode = "copy" if copy_images else "none"
+    if image_mode not in {"symlink", "copy", "none"}:
+        raise ValueError("image_mode must be one of: symlink, copy, none")
+
+    print(
+        f"[prepare:{split_name}] images={len(image_paths)} image_dir={image_src} "
+        f"annotations={ann_src} image_mode={image_mode}",
+        flush=True,
+    )
+    summary = {"images": 0, "boxes": 0, "ignored": 0, "empty_labels": 0, "linked": 0, "copied": 0}
+    for index, image_path in enumerate(image_paths, start=1):
         width, height = _read_image_size(image_path)
         annotation_path = ann_src / f"{image_path.stem}.txt"
         yolo_rows: list[str] = []
@@ -130,16 +157,51 @@ def convert_visdrone_split(
                 yolo_rows.append(converted)
 
         (label_dst / f"{image_path.stem}.txt").write_text("\n".join(yolo_rows), encoding="utf-8")
-        if copy_images:
-            shutil.copy2(image_path, image_dst / image_path.name)
+        used_mode = materialize_image(image_path, image_dst / image_path.name, image_mode=image_mode)
+        if used_mode == "symlink":
+            summary["linked"] += 1
+        elif used_mode == "copy":
+            summary["copied"] += 1
 
         summary["images"] += 1
         summary["boxes"] += len(yolo_rows)
         summary["ignored"] += ignored
         if not yolo_rows:
             summary["empty_labels"] += 1
+        if progress_every > 0 and (index == 1 or index % progress_every == 0 or index == len(image_paths)):
+            print(
+                f"[prepare:{split_name}] {index}/{len(image_paths)} images, "
+                f"boxes={summary['boxes']}, ignored={summary['ignored']}, "
+                f"linked={summary['linked']}, copied={summary['copied']}",
+                flush=True,
+            )
 
     return summary
+
+
+def materialize_image(source_path: Path | str, output_path: Path | str, image_mode: str) -> str:
+    """Expose one image in the prepared dataset and return the mode actually used."""
+
+    src = Path(source_path)
+    dst = Path(output_path)
+    if image_mode == "none":
+        return "none"
+    if dst.exists() or dst.is_symlink():
+        return "symlink" if dst.is_symlink() else "copy"
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if image_mode == "symlink":
+        try:
+            os.symlink(src, dst)
+            return "symlink"
+        except OSError as exc:
+            print(
+                f"[prepare] symlink failed for {src.name}: {exc}. Falling back to copy.",
+                file=sys.stderr,
+                flush=True,
+            )
+    shutil.copy2(src, dst)
+    return "copy"
 
 
 def resolve_split_dirs(source_split: Path | str) -> tuple[Path, Path]:

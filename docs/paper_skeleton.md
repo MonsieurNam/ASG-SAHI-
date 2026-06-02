@@ -1,111 +1,104 @@
-# ASG-SAHI Paper Skeleton
+# STD-YOLO Paper Skeleton
 
 ## Tentative Title
 
-ASG-SAHI: Adaptive Scale-Guided Sliced Inference with Stability-Aware Test-Time Augmentation for Small Object Detection in UAV Imagery
+STD-YOLO: Transferring Sliced-Teacher Knowledge into Single-Pass UAV Small Object Detection
 
 ## Abstract Draft
 
-Small object detection in UAV imagery remains difficult because distant and densely packed targets occupy only a few pixels in high-resolution frames. Slicing-aided inference improves detector recall by magnifying local regions, but fixed slicing introduces redundant computation and can over-process sparse images. This paper proposes ASG-SAHI, an adaptive scale-guided inference pipeline that selects slice size and overlap from a low-resolution preview pass, then applies horizontal-flip test-time augmentation only for high-density scenes. Class-safe weighted box fusion merges detections from slices and augmented views. Experiments on VisDrone2019-DET compare full-image YOLOv8 inference, standard TTA, fixed SAHI, fixed SAHI with WBF, ASG-SAHI, and ASG-SAHI with lite TTA under the same detector weights. The study reports mAP, class-wise AP, latency, and average slices per image to evaluate the accuracy-efficiency trade-off on T4-level hardware.
+Small object detection in UAV imagery remains difficult because distant targets occupy only a few pixels and often appear in dense, occluded scenes. Sliced inference such as SAHI improves recall by evaluating local crops at higher effective resolution, but this accuracy gain comes with higher inference latency and redundant computation. This paper proposes STD-YOLO, a sliced-teacher distillation pipeline that uses a SAHI-enhanced detector as a teacher to mine high-confidence small-object pseudo labels on the training split, then fine-tunes a standard YOLO student for single-pass inference. The method filters teacher detections by class, confidence, object scale, and overlap with ground-truth annotations to reduce pseudo-label noise. Experiments on VisDrone2019-DET compare full-image YOLOv8s, fixed SAHI teacher inference, and the distilled single-pass student using mAP, class-wise AP, latency, and pseudo-label quality statistics. The goal is to recover part of the sliced-inference accuracy gain while retaining near full-image deployment speed.
 
 ## 1. Introduction
 
-- UAV imagery contains tiny, dense, and occluded targets.
-- Full-image YOLO inference is efficient but loses fine object detail.
-- Fixed SAHI improves local resolution but increases redundant computation.
-- TTA and WBF can recover unstable detections, yet full TTA is costly.
+- UAV detection has a practical accuracy-latency conflict: full-image detectors are fast but miss tiny objects; sliced inference detects more tiny objects but is slower.
+- Existing adaptive slicing methods reduce redundancy, but still require tiled inference at deployment.
+- STD-YOLO changes the deployment point: slicing is used only as an offline teacher during training.
 - Contributions:
-  - Preview-density adaptive slicing policy.
-  - High-density-only lite TTA.
-  - Class-safe WBF/NMS merge layer.
-  - Reproducible VisDrone accuracy-latency ablation.
+  - A sliced-teacher pseudo-labeling pipeline for VisDrone small classes.
+  - Confidence, scale, and GT-overlap filters to control pseudo-label noise.
+  - A single-pass student comparison against both full-image YOLO and fixed SAHI teacher.
+  - Accuracy-latency and class-wise analysis focused on small UAV targets.
 
 ## 2. Related Work
 
-- YOLO-based small object detection: YOLOv8, SL-YOLO, MSD-YOLO.
-- Sliced inference: SAHI, ASAHI, density/adaptive slicing.
-- Test-time augmentation and box fusion: hflip/multiscale TTA, WBF.
-- UAV detection benchmark: VisDrone2019-DET.
+- UAV small object detection with YOLO-family detectors.
+- Sliced inference and fine-tuning: SAHI, ASAHI, density-guided variants.
+- Knowledge distillation and pseudo-labeling for aerial object detection.
+- VisDrone2019-DET as a dense UAV benchmark.
 
 ## 3. Method
 
-### 3.1 Baseline Detector
+### 3.1 Baseline and Teacher
 
-Train YOLOv8s on the official VisDrone train split using image size 640 and seed 42. Use the same weights for all inference modes.
+Train YOLOv8s on VisDrone at image size 640. Use the trained detector in two inference modes:
 
-### 3.2 Fixed SAHI Baseline
+- full-image baseline;
+- fixed SAHI teacher with 640-pixel slices and 0.25 overlap.
 
-Slice each image into 640-pixel windows with 0.25 overlap, remap local boxes to global coordinates, then apply class-safe NMS or WBF.
+The fixed SAHI teacher provides an upper-bound accuracy signal but is not the deployment method.
 
-### 3.3 ASG-SAHI Policy
+### 3.2 Sliced-Teacher Pseudo-Label Mining
 
-Run a preview detector pass and compute:
+Run fixed SAHI on the training images and keep only pseudo detections satisfying:
 
-- boxes per megapixel;
-- median predicted box area divided by image area.
+- class in pedestrian, people, bicycle, tricycle, awning-tricycle, motor;
+- confidence at least 0.30;
+- box area ratio at most 0.025;
+- IoU with same-class GT at most 0.30;
+- IoU with cross-class GT at most 0.40;
+- at most 80 pseudo labels per image.
 
-Policy:
+The final train labels are the union of original GT and filtered pseudo labels. Validation labels remain unchanged.
 
-- low density: 768-pixel slices, 0.15 overlap, no TTA;
-- medium density: 640-pixel slices, 0.25 overlap, no TTA;
-- high density or tiny predicted scale: 512-pixel slices, 0.30 overlap, optional hflip TTA.
+### 3.3 Student Training
 
-### 3.4 Post-Processing
-
-Apply class-safe WBF for sliced/TTA modes. Use NMS as fallback and as a separate ablation.
+Fine-tune YOLOv8s from the baseline checkpoint on the distilled dataset. At evaluation time, the student uses full-image single-pass inference only.
 
 ## 4. Experiments
 
 ### Dataset
 
-VisDrone2019-DET train/val. Test-dev is optional if labels/evaluation tooling are available.
+VisDrone2019-DET train/val prepared in YOLO format.
 
 ### Compared Methods
 
-1. YOLOv8s full-image inference.
-2. YOLOv8s with Ultralytics augment/TTA.
-3. YOLOv8s + fixed SAHI.
-4. YOLOv8s + fixed SAHI + WBF.
-5. ASG-SAHI.
-6. ASG-SAHI + lite TTA.
+1. YOLOv8s full-image baseline.
+2. YOLOv8s + fixed SAHI teacher.
+3. STD-YOLO full-image student.
+4. Optional control: YOLOv8s fine-tuned for the same number of epochs on original labels only.
 
 ### Metrics
 
-- mAP@0.50;
-- mAP@0.50:0.95;
-- class-wise AP;
-- average latency per image;
-- average slices per image;
-- qualitative failure cases.
+- mAP@0.50 and mAP@0.50:0.95.
+- Class-wise AP for small classes.
+- Average latency per image.
+- Pseudo-label counts, score distribution, and drop reasons.
 
 ## 5. Results and Discussion
 
-Fill after running `evaluate_results.py`.
-
 ### Main Result Table
 
-| Method | mAP50 | mAP50-95 | Avg latency | Avg slices |
-|---|---:|---:|---:|---:|
-| full | TBD | TBD | TBD | TBD |
-| tta | TBD | TBD | TBD | TBD |
-| fixed_sahi | TBD | TBD | TBD | TBD |
-| fixed_sahi_wbf | TBD | TBD | TBD | TBD |
-| asg_sahi | TBD | TBD | TBD | TBD |
-| asg_sahi_tta | TBD | TBD | TBD | TBD |
+| Method | mAP50 | mAP50-95 | Avg latency | Deployment |
+|---|---:|---:|---:|---|
+| full | 0.3635 | 0.2128 | 29.0 ms | single-pass |
+| fixed_sahi | 0.4203 | 0.2429 | 96.6 ms | sliced |
+| std_yolo_full | TBD | TBD | TBD | single-pass |
+| ft_original50 | optional | optional | optional | single-pass |
 
 ### Expected Discussion Angles
 
-- ASG-SAHI should reduce slice count relative to fixed SAHI on sparse images.
-- Lite TTA should help high-density scenes more than low-density scenes.
-- WBF may improve duplicate handling but can hurt if detector scores are poorly calibrated.
+- Fixed SAHI confirms that sliced teacher knowledge exists, especially for pedestrian, people, bicycle, and motor.
+- STD-YOLO is successful if it improves full-image mAP while keeping latency near the original detector.
+- If fine-tuning control also improves, the discussion must separate generic extra training from pseudo-label distillation.
+- Pseudo-label noise remains the key limitation.
 
 ## 6. Limitations
 
-- Single detector family.
-- Main contribution is inference-time adaptation, not a new model architecture.
-- Preview density depends on baseline detector quality.
-- VisDrone-only result needs external validation later.
+- The method depends on teacher quality.
+- Pseudo labels can reinforce teacher false positives.
+- Main evaluation is VisDrone-only.
+- The current implementation transfers box labels, not feature-level distillation.
 
 ## 7. Conclusion
 
-ASG-SAHI targets the practical accuracy-latency trade-off for UAV small object detection on limited GPU hardware.
+STD-YOLO uses sliced inference as an offline teacher rather than a deployment-time requirement, targeting a practical balance between small-object recall and single-pass inference speed for UAV imagery.

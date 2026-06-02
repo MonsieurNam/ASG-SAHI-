@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 
 
@@ -23,6 +22,8 @@ def list_images(path: Path | str) -> list[Path]:
 
 
 def read_image(path: Path | str) -> np.ndarray:
+    import cv2
+
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"failed to read image: {path}")

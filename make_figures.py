@@ -14,7 +14,8 @@ from adaptive_sahi.io import list_images, load_prediction_jsonl, read_image
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create ASG-SAHI result figures.")
-    parser.add_argument("--metrics-csv", required=True, help="CSV with method, mAP50, avg_latency_ms columns.")
+    parser.add_argument("--metrics-csv", default=None, help="CSV with method, mAP50, avg_latency_ms columns.")
+    parser.add_argument("--metrics-dir", default=None, help="Directory containing *.summary.csv metric files.")
     parser.add_argument("--output-dir", default="figures")
     parser.add_argument("--images-dir", default=None)
     parser.add_argument("--predictions-jsonl", default=None)
@@ -27,7 +28,8 @@ def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    metrics = pd.read_csv(args.metrics_csv)
+    metrics = _load_metrics(args)
+    metrics.to_csv(output_dir / "combined_metrics.csv", index=False)
 
     _plot_accuracy_latency(metrics, output_dir / "accuracy_latency.png")
     if "avg_slice_count" in metrics.columns:
@@ -41,6 +43,21 @@ def main() -> None:
             max_images=args.max_images,
             score_threshold=args.score_threshold,
         )
+
+
+def _load_metrics(args: argparse.Namespace) -> pd.DataFrame:
+    if args.metrics_csv:
+        return pd.read_csv(args.metrics_csv)
+    if args.metrics_dir:
+        summary_paths = sorted(Path(args.metrics_dir).glob("*.summary.csv"))
+        if not summary_paths:
+            raise FileNotFoundError(f"No *.summary.csv files found in {args.metrics_dir}")
+        frames = [pd.read_csv(path) for path in summary_paths]
+        metrics = pd.concat(frames, ignore_index=True)
+        if "method" in metrics.columns:
+            metrics = metrics[metrics["method"] != "full_smoke"]
+        return metrics
+    raise SystemExit("Provide either --metrics-csv or --metrics-dir")
 
 
 def _plot_accuracy_latency(metrics: pd.DataFrame, output_path: Path) -> None:

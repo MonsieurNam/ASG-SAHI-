@@ -3,7 +3,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from prepare_visdrone import convert_visdrone_split, resolve_split_dirs, write_dataset_yaml
+from prepare_visdrone import convert_visdrone_split, materialize_image, resolve_split_dirs, write_dataset_yaml
 
 
 def test_convert_visdrone_split_writes_yolo_labels_and_skips_ignored(tmp_path: Path):
@@ -65,3 +65,19 @@ def test_resolve_split_dirs_handles_images_directly_in_split(tmp_path: Path):
 
     assert image_dir == split
     assert annotation_dir == split / "annotations"
+
+
+def test_materialize_image_symlink_falls_back_to_copy(tmp_path: Path, monkeypatch):
+    src = tmp_path / "src.jpg"
+    dst = tmp_path / "nested" / "dst.jpg"
+    src.write_bytes(b"image-bytes")
+
+    def fail_symlink(_src, _dst):
+        raise OSError("symlink unavailable")
+
+    monkeypatch.setattr("os.symlink", fail_symlink)
+
+    mode_used = materialize_image(src, dst, image_mode="symlink")
+
+    assert mode_used == "copy"
+    assert dst.read_bytes() == b"image-bytes"
